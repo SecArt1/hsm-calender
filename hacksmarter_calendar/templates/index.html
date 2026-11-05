@@ -314,8 +314,19 @@
         }
         
         .form-group input,
-        .form-group textarea {
+        .form-group textarea,
+        .form-group select {
             width: 100%;
+        }
+
+        .recurrence-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+        }
+
+        .recurrence-grid .form-group {
+            margin-bottom: 0;
         }
         
         textarea {
@@ -407,7 +418,10 @@
         <div class="day-details-panel" id="dayDetailsPanel">
             <div class="day-details-panel-header">
                 <span id="dayDetailsHeader">Day details</span>
-                <button type="button" class="btn-secondary" onclick="closeDayDetails()">Close</button>
+                <div>
+                    <button type="button" onclick="openSelectedDayModal()">Add event</button>
+                    <button type="button" class="btn-secondary" onclick="closeDayDetails()">Close</button>
+                </div>
             </div>
             <div id="dayDetails"></div>
         </div>
@@ -447,6 +461,40 @@
                 <label>Description (optional)</label>
                 <textarea id="eventDescription" placeholder="Additional details..."></textarea>
             </div>
+            <div class="form-group">
+                <label for="eventRepeat">Does not repeat</label>
+                <select id="eventRepeat" onchange="updateRecurrenceFields()">
+                    <option value="none">Does not repeat</option>
+                    <option value="daily">Daily</option>
+                    <option value="weekly">Weekly</option>
+                    <option value="monthly">Monthly</option>
+                    <option value="yearly">Yearly</option>
+                </select>
+            </div>
+            <div id="recurrenceFields" hidden>
+                <div class="recurrence-grid">
+                    <div class="form-group">
+                        <label for="repeatInterval">Repeat every</label>
+                        <input type="number" id="repeatInterval" min="1" max="30" value="1">
+                    </div>
+                    <div class="form-group">
+                        <label for="repeatEnd">Ends</label>
+                        <select id="repeatEnd" onchange="updateRecurrenceFields()">
+                            <option value="never">Never (1 year)</option>
+                            <option value="date">On date</option>
+                            <option value="count">After occurrences</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="form-group" id="repeatEndDateGroup" hidden>
+                    <label for="repeatEndDate">End date</label>
+                    <input type="date" id="repeatEndDate">
+                </div>
+                <div class="form-group" id="repeatCountGroup" hidden>
+                    <label for="repeatCount">Number of occurrences</label>
+                    <input type="number" id="repeatCount" min="1" max="366" value="10">
+                </div>
+            </div>
             <div class="modal-buttons">
                 <button onclick="closeModal()" class="btn-secondary">Cancel</button>
                 <button onclick="saveEvent()">Save Event</button>
@@ -460,6 +508,7 @@
         let currentYear = new Date().getFullYear();
         let currentEvents = {};
         let selectedDate = null;
+        let selectedDay = null;
 
         const themes = {
             hacker_green: {
@@ -660,15 +709,36 @@
         
         function openModal(dateKey, day) {
             selectedDate = dateKey;
+            selectedDay = day;
             document.getElementById('eventTitle').value = '';
             document.getElementById('eventTime').value = '';
             document.getElementById('eventDescription').value = '';
+            document.getElementById('eventRepeat').value = 'none';
+            document.getElementById('repeatInterval').value = '1';
+            document.getElementById('repeatEnd').value = 'never';
+            document.getElementById('repeatEndDate').value = '';
+            document.getElementById('repeatCount').value = '10';
+            updateRecurrenceFields();
             document.getElementById('eventModal').classList.add('active');
             document.getElementById('eventModal').querySelector('.modal-header').textContent = 
                 `Add Event - ${monthNames[currentMonth]} ${day}, ${currentYear}`;
         }
 
+        function openSelectedDayModal() {
+            if (selectedDate && selectedDay) openModal(selectedDate, selectedDay);
+        }
+
+        function updateRecurrenceFields() {
+            const repeating = document.getElementById('eventRepeat').value !== 'none';
+            const end = document.getElementById('repeatEnd').value;
+            document.getElementById('recurrenceFields').hidden = !repeating;
+            document.getElementById('repeatEndDateGroup').hidden = !repeating || end !== 'date';
+            document.getElementById('repeatCountGroup').hidden = !repeating || end !== 'count';
+        }
+
         function openDayDetails(dateKey, day) {
+            selectedDate = dateKey;
+            selectedDay = day;
             const details = document.getElementById('dayDetails');
             document.getElementById('dayDetailsHeader').textContent =
                 `${monthNames[currentMonth]} ${day}, ${currentYear}`;
@@ -687,9 +757,13 @@
                     const description = event.description
                         ? `<div class="day-event-description">${escapeHtml(event.description)}</div>`
                         : '';
+                    const recurrence = event.recurrence
+                        ? `<div class="day-event-description">Repeats ${event.recurrence.frequency}${event.recurrence.interval > 1 ? ` every ${event.recurrence.interval}` : ''}</div>`
+                        : '';
                     eventElement.innerHTML = `
                         ${time}<span class="day-event-title">${escapeHtml(event.title || '')}</span>
                         ${description}
+                        ${recurrence}
                     `;
 
                     const deleteButton = document.createElement('button');
@@ -700,6 +774,18 @@
                         openDayDetails(dateKey, day);
                     });
                     eventElement.appendChild(deleteButton);
+                    if (event.series_id) {
+                        const deleteSeriesButton = document.createElement('button');
+                        deleteSeriesButton.className = 'btn-secondary';
+                        deleteSeriesButton.textContent = 'Delete series';
+                        deleteSeriesButton.addEventListener('click', async () => {
+                            if (confirm('Delete every occurrence of this series?')) {
+                                await deleteEvent(dateKey, eventIndex, false, true);
+                                closeDayDetails();
+                            }
+                        });
+                        eventElement.appendChild(deleteSeriesButton);
+                    }
                     details.appendChild(eventElement);
                 });
             }
@@ -718,6 +804,11 @@
             const title = document.getElementById('eventTitle').value.trim();
             const time = document.getElementById('eventTime').value.trim();
             const description = document.getElementById('eventDescription').value.trim();
+            const repeat = document.getElementById('eventRepeat').value;
+            const repeatInterval = Number(document.getElementById('repeatInterval').value);
+            const repeatEnd = document.getElementById('repeatEnd').value;
+            const repeatEndDate = document.getElementById('repeatEndDate').value;
+            const repeatCount = Number(document.getElementById('repeatCount').value);
             
             // Validate inputs
             if (!title) {
@@ -739,6 +830,21 @@
                 alert('Description is too long (max 500 characters)');
                 return;
             }
+
+            if (repeat !== 'none') {
+                if (!Number.isInteger(repeatInterval) || repeatInterval < 1 || repeatInterval > 30) {
+                    alert('Repeat interval must be between 1 and 30');
+                    return;
+                }
+                if (repeatEnd === 'date' && (!repeatEndDate || repeatEndDate < selectedDate)) {
+                    alert('Choose an end date on or after the event date');
+                    return;
+                }
+                if (repeatEnd === 'count' && (!Number.isInteger(repeatCount) || repeatCount < 1 || repeatCount > 366)) {
+                    alert('Number of occurrences must be between 1 and 366');
+                    return;
+                }
+            }
             
             if (!validateDate(selectedDate)) {
                 alert('Invalid date');
@@ -749,7 +855,12 @@
                 date: selectedDate,
                 title: title,
                 time: time,
-                description: description
+                description: description,
+                repeat: repeat,
+                repeat_interval: repeatInterval,
+                repeat_end: repeatEnd,
+                repeat_end_date: repeatEndDate,
+                repeat_count: repeatCount
             };
             
             try {
@@ -772,7 +883,7 @@
             }
         }
         
-        async function deleteEvent(date, index, confirmDelete = true) {
+        async function deleteEvent(date, index, confirmDelete = true, deleteSeries = false) {
             if (confirmDelete && !confirm('Delete this event?')) return false;
             
             if (!validateDate(date)) {
@@ -784,7 +895,7 @@
                 const response = await fetch('/api/events', {
                     method: 'DELETE',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ date, index })
+                    body: JSON.stringify({ date, index, delete_series: deleteSeries })
                 });
                 
                 if (!response.ok) {
